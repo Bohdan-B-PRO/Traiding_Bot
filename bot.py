@@ -1,5 +1,6 @@
 import os
 import logging
+import aiohttp
 import asyncio
 from aiogram import Bot, Dispatcher, types
 import ccxt.async_support as ccxt
@@ -10,6 +11,8 @@ from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.dispatcher.storage import BaseStorage, FSMContext
 import matplotlib.pyplot as plt
 import io
+import pandas as pd
+import numpy as np
 
 
 def is_number(s):
@@ -112,6 +115,8 @@ menu.add(InlineKeyboardButton("Set Price Alert", callback_data="set_price_alert"
 cancel_button = InlineKeyboardButton("Отмена", callback_data="cancel_action")
 menu.add(InlineKeyboardButton("Activate Alerts", callback_data="activate_alerts"))
 menu.add(InlineKeyboardButton("Deactivate Alerts", callback_data="deactivate_alerts"))
+menu.add(InlineKeyboardButton("Market Analysis", callback_data="market_analysis"))
+
 
 admin_id = 379834541  # Замените на ваш идентификатор пользователя в Telegram
 
@@ -156,6 +161,459 @@ async def clear_chat(callback_query: types.CallbackQuery):
     await show_menu_after_request(callback_query.message)
     await callback_query.answer()
 
+
+class MarketAnalysis:
+
+    def __init__(self, bot, exchange):
+        self.bot = bot
+        self.exchange = exchange
+        dp.callback_query_handler(lambda c: c.data.startswith('market_analysis'), state="*")(self.handle_market_analysis)
+
+    async def handle_market_analysis(self, callback_query: types.CallbackQuery):
+        await self.market_analysis(callback_query)
+
+    async def market_analysis(self, callback_query: types.CallbackQuery):
+        analysis_result = await self.perform_market_analysis()
+        await self.bot.send_message(callback_query.from_user.id, analysis_result)
+        await self.bot.send_message(callback_query.from_user.id, "Выберите следующую команду из меню:",
+                                    reply_markup=menu)
+
+    async def perform_market_analysis(self):
+        coins = ["BTC", "ETH", "BNB", "ADA", "DOGE", "XRP", "DOT", "UNI", "BCH", "LTC", "LINK", "MATIC", "XLM", "ETC",
+                 "THETA", "VET", "TRX", "FIL", "XMR", "EOS"]
+        timeframes = ["5m", "15m", "30m", "1h", "4h", "1d"]
+
+        best_coin = None
+        best_timeframe = None
+        best_score = -float('inf')
+        best_recommendation = None
+
+        for coin in coins:
+            for timeframe in timeframes:
+                score, recommendation = await self.analyze_coin(coin, timeframe)
+                if score > best_score:
+                    best_score = score
+                    best_coin = coin
+                    best_timeframe = timeframe
+                    best_recommendation = recommendation
+
+        # Compute the volatility, signal_strength, rsi, and macd values based on your data
+        volatility = 0.1  # Replace with actual calculation
+        signal_strength = 0.5  # Replace with actual calculation
+        rsi = 30  # Replace with actual calculation
+        macd = -0.02  # Replace with actual calculation
+
+        holding_duration = self.get_holding_duration(
+            volatility=volatility, signal_strength=signal_strength,
+            rsi=rsi, macd=macd, recommendation=best_recommendation
+        )
+        return f"Лучшая монета для торговли: {best_coin} на таймфрейме {best_timeframe}. Рекомендация: {best_recommendation}. {holding_duration}"
+
+    def get_holding_duration(self, recommendation, volatility, signal_strength, rsi, macd):
+        """
+        Возвращает рекомендуемую продолжительность удержания монеты на основе рекомендации, волатильности рынка,
+        силы сигнала, RSI и MACD.
+
+        :param recommendation: Строка, указывающая рекомендацию ("Купить", "Продать", "Держать").
+        :param volatility: Float, представляющий волатильность рынка.
+        :param signal_strength: Float, представляющий силу сигнала покупки/продажи.
+        :param rsi: Float, представляющий индекс относительной силы (RSI).
+        :param macd: Float, представляющий индикатор схождения/расхождения скользящих средних (MACD).
+        :return: Строка с рекомендацией по продолжительности удержания.
+        """
+        if recommendation == "Купить":
+            if volatility > 0.05 or signal_strength > 0.8:
+                return "Рекомендуемая продолжительность удержания: 12 часов или до следующего сигнала."
+            elif rsi < 30:
+                return "Рекомендуемая продолжительность удержания: 48 часов или до следующего сигнала."
+            elif macd > 0:
+                return "Рекомендуемая продолжительность удержания: 36 часов или до следующего сигнала."
+            else:
+                return "Рекомендуемая продолжительность удержания: 24 часа или до следующего сигнала."
+        elif recommendation == "Продать":
+            return "Рассмотрите возможность продажи в течение следующих 12 часов."
+        else:  # Держать
+            if rsi < 30 or rsi > 70:
+                return "Проведите повторную оценку через 12 часов."
+            elif macd < 0:
+                return "Проведите повторную оценку через 18 часов."
+            else:
+                return "Проведите повторную оценку через 24 часа."
+
+    async def analyze_coin(self, coin, timeframe):
+        """Анализирует монету на заданном таймфрейме и возвращает рекомендацию и оценку."""
+        ohlc_data = await self.exchange.fetch_ohlcv(f'{coin}/USDT', timeframe)
+        if not ohlc_data:
+            return 0, "Нет данных"
+        recommendation = self.analyze_data(ohlc_data)
+
+        score = 0
+        if recommendation == "Купить":
+            score = 1
+        elif recommendation == "Продать":
+            score = -1
+
+        return score, recommendation
+
+    def compute_ema(self, data, span=14):
+        """
+        Вычисляет экспоненциальное скользящее среднее (EMA) для данных.
+
+        :param data: Ряд данных для вычисления EMA.
+        :param span: Период для EMA.
+        :return: Ряд EMA.
+        """
+        return data.ewm(span=span, adjust=False).mean()
+
+    def compute_rsi(self, data, window=14):
+        """
+        Вычисляет индекс относительной силы (RSI) для данных.
+
+        :param data: Ряд данных для вычисления RSI.
+        :param window: Период для RSI.
+        :return: Последнее значение RSI.
+        """
+        delta = data.diff()
+        gain = delta.where(delta > 0, 0).fillna(0)
+        loss = -delta.where(delta < 0, 0).fillna(0)
+
+        avg_gain = self.compute_ema(gain, span=window)
+        avg_loss = self.compute_ema(loss, span=window)
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        return rsi.iloc[-1]
+
+    def compute_macd(self, data, short_window=12, long_window=26, signal_window=9):
+        """
+        Вычисляет индикатор MACD для данных.
+
+        :param data: Ряд данных для вычисления MACD.
+        :param short_window: Короткий период для MACD.
+        :param long_window: Длинный период для MACD.
+        :param signal_window: Период сигнала для MACD.
+        :return: Последнее значение гистограммы MACD.
+        """
+        short_ema = self.compute_ema(data, short_window)
+        long_ema = self.compute_ema(data, long_window)
+        macd_line = short_ema - long_ema
+        signal_line = self.compute_ema(macd_line, signal_window)
+        histogram = macd_line - signal_line
+
+        return histogram.iloc[-1]
+
+    def analyze_data(self, data):
+        """
+        Анализирует данные и предоставляет рекомендацию на основе RSI и MACD.
+
+        :param data: Данные OHLC для анализа.
+        :return: Строка с рекомендацией.
+        """
+        closes = pd.Series([item[4] for item in data])
+
+        rsi = self.compute_rsi(closes)
+        macd_histogram = self.compute_macd(closes)
+
+        if rsi < 30 and macd_histogram > 0:
+            return "Купить"
+        elif rsi > 70 and macd_histogram < 0:
+            return "Продать"
+        else:
+            return "Держать"
+
+    def compute_bollinger_bands(self, data, window=20, num_std=2, plot=False):
+        """
+        Вычисляет Bollinger Bands для данных цен.
+        Parameters:
+        - data (pd.Series): Серия данных цен закрытия.
+        - window (int): Размер окна для скользящей средней.
+        - num_std (int): Количество стандартных отклонений для верхней и нижней ленты.
+        - plot (bool): Если True, отображает график.
+        Returns:
+        - tuple: Верхняя лента, средняя лента (SMA), нижняя лента.
+        """
+        sma = data.rolling(window=window).mean()
+        rolling_std = data.rolling(window=window).std()
+        upper_band = sma + (rolling_std * num_std)
+        lower_band = sma - (rolling_std * num_std)
+        if plot:
+            plt.figure(figsize=(10, 6))
+            data.plot(label='Close Price')
+            upper_band.plot(label=f'Upper Band ({num_std} STD)', linestyle='--')
+            lower_band.plot(label=f'Lower Band ({num_std} STD)', linestyle='--')
+            sma.plot(label=f'SMA-{window}')
+            plt.title('Bollinger Bands')
+            plt.legend()
+            plt.show()
+        return upper_band, sma, lower_band
+
+    def compute_stochastic_oscillator(self, data, window=14, smooth_window=3, plot=False):
+        """
+        Вычисляет Stochastic Oscillator для данных цен.
+        Parameters:
+        - data (pd.DataFrame): DataFrame с колонками 'Close', 'High' и 'Low'.
+        - window (int): Размер окна для вычисления.
+        - smooth_window (int): Размер окна для сглаживания %K для вычисления %D.
+        - plot (bool): Если True, отображает график.
+        Returns:
+        - tuple: %K, %D.
+        """
+        low_min = data['Low'].rolling(window=window).min()
+        high_max = data['High'].rolling(window=window).max()
+        k_percent = 100 * ((data['Close'] - low_min) / (high_max - low_min))
+        d_percent = k_percent.rolling(window=smooth_window).mean()
+        if plot:
+            plt.figure(figsize=(10, 6))
+            k_percent.plot(label='%K line')
+            d_percent.plot(label='%D line', linestyle='--')
+            plt.title('Stochastic Oscillator')
+            plt.legend()
+            plt.show()
+        return k_percent, d_percent
+
+
+    def combined_strategy(self, data, window_size=20, rsi_thresholds=(30, 70), macd_threshold=0, plot=False):
+        # Проверяем, есть ли достаточно данных для расчета индикаторов
+        if len(data) < window_size:
+            return {"status": "error", "message": "Недостаточно данных"}
+
+        # Рассчитываем индикаторы MACD, RSI и Bollinger Bands
+        exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        signal = macd.ewm(span=9, adjust=False).mean()
+
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).fillna(0)
+        loss = (-delta.where(delta < 0, 0)).fillna(0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        sma = data['Close'].rolling(window=window_size).mean()
+        std_dev = data['Close'].rolling(window=window_size).std()
+        upper = sma + (std_dev * 2)
+        lower = sma - (std_dev * 2)
+
+        # Определяем сигналы для покупки и продажи на основе индикаторов
+        buy_signal = (macd > signal + macd_threshold) & (rsi < rsi_thresholds[0]) & (data['Close'] < lower)
+        sell_signal = (macd < signal - macd_threshold) & (rsi > rsi_thresholds[1]) & (data['Close'] > upper)
+
+        # Возвращаем результаты анализа в виде словаря
+        result = {
+            "status": "success",
+            "recommendation": "Купить" if buy_signal.iloc[-1] else "Продать" if sell_signal.iloc[-1] else "Держать",
+            "indicators": {
+                "MACD": "Покупка" if macd.iloc[-1] > signal.iloc[-1] + macd_threshold else "Продажа",
+                "RSI": "Покупка" if rsi.iloc[-1] < rsi_thresholds[0] else "Продажа" if rsi.iloc[-1] > rsi_thresholds[
+                    1] else "Нейтрально",
+                "Bollinger Bands": "Покупка" if data['Close'].iloc[-1] < lower.iloc[-1] else "Продажа" if
+                data['Close'].iloc[-1] > upper.iloc[-1] else "Нейтрально"
+            }
+        }
+
+        # Построим графики с индикаторами и сигналами для покупки и продажи, если параметр plot установлен в True
+        if plot:
+            fig, ax = plt.subplots(3, 1, figsize=(12, 8))
+            ax[0].plot(data['Close'], label='Close Price')
+            ax[0].plot(upper, label='Upper Bollinger Band', linestyle='--')
+            ax[0].plot(lower, label='Lower Bollinger Band', linestyle='--')
+            ax[0].scatter(data.index[buy_signal], data['Close'][buy_signal], color='green', label='Buy Signal',
+                          marker='^')
+            ax[0].scatter(data.index[sell_signal], data['Close'][sell_signal], color='red', label='Sell Signal',
+                          marker='v')
+            ax[0].legend()
+
+            ax[1].plot(macd, label='MACD')
+            ax[1].plot(signal, label='Signal Line')
+            ax[1].legend()
+
+            ax[2].plot(rsi, label='RSI')
+            ax[2].axhline(y=rsi_thresholds[0], color='green', linestyle='--')
+            ax[2].axhline(y=rsi_thresholds[1], color='red', linestyle='--')
+            ax[2].legend()
+
+            plt.show()
+
+        return result
+
+    def adaptive_timeframes(self, data):
+        # Вычисляем историческую волатильность (стандартное отклонение цен закрытия)
+        historical_volatility = data['Close'].std()
+
+        # Вычисляем текущую волатильность (разница между максимальной и минимальной ценой за последние N периодов)
+        current_volatility = data['High'].rolling(window=10).max() - data['Low'].rolling(window=10).min()
+
+        # Вычисляем относительную волатильность (отношение текущей волатильности к исторической)
+        relative_volatility = current_volatility / historical_volatility
+
+        # Вычисляем средний объем торгов за последние N периодов
+        average_volume = data['Volume'].rolling(window=10).mean()
+
+        # Вычисляем ликвидность (средний объем торгов, умноженный на среднюю цену закрытия)
+        liquidity = average_volume * data['Close'].rolling(window=10).mean()
+
+        # Вычисляем тренд (направление движения цен)
+        trend = np.sign(data['Close'].diff().rolling(window=10).mean())
+
+        # Определяем таймфрейм на основе относительной волатильности, объема торгов, ликвидности и тренда
+        if relative_volatility < 0.5 and average_volume < 1000000 and liquidity < 1000000 and trend == 1:
+            return '1m'
+        elif relative_volatility < 1 and average_volume < 2000000 and liquidity < 2000000 and trend == 1:
+            return '5m'
+        elif relative_volatility < 2 and average_volume < 3000000 and liquidity < 3000000 and trend == -1:
+            return '15m'
+        elif relative_volatility < 4 and average_volume < 4000000 and liquidity < 4000000 and trend == -1:
+            return '1h'
+        elif relative_volatility < 8 and average_volume < 5000000 and liquidity < 5000000 and trend == 1:
+            return '4h'
+        else:
+            return '1d'
+
+    # Обучение с подкреплением
+    def reinforcement_learning(self, data, n_episodes=1000):
+        n_states = 10
+        n_actions = 3  # Купить, продать, держать
+
+        Q = np.zeros((n_states, n_actions))
+
+        alpha = 0.1
+        gamma = 0.99
+        epsilon = 0.1
+
+        for episode in range(n_episodes):
+            for i in range(1, len(data) - 1):
+                state = self.get_state(data, i - 1)
+                action = self.choose_action(Q, state, epsilon)
+                reward = self.get_reward(data, i, action)
+                next_state = self.get_state(data, i)
+                Q[state, action] = Q[state, action] + alpha * (
+                            reward + gamma * np.max(Q[next_state, :]) - Q[state, action])
+
+        return Q
+
+    def choose_action(self, Q, state, epsilon):
+        if np.random.uniform(0, 1) < epsilon:
+            return np.random.choice(3)
+        else:
+            return np.argmax(Q[state, :])
+
+    def get_state(self, data, index):
+        return int(np.digitize(data['Close'][index], np.linspace(data['Close'].min(), data['Close'].max(), 10)))
+
+    def get_reward(self, data, index, action):
+        if action == 0:
+            return data['Close'][index + 1] - data['Close'][index]
+        elif action == 1:
+            return data['Close'][index] - data['Close'][index + 1]
+        else:
+            return 0
+
+    def get_recommendation(self, data, Q):
+        state = self.get_state(data, len(data) - 1)
+        action = np.argmax(Q[state, :])
+        if action == 0:
+            return "Купить"
+        elif action == 1:
+            return "Продать"
+        else:
+            return "Держать"
+
+    def backtesting(self, strategy, historical_data, initial_balance=100000, commission=0.001, trade_size=100,
+                    stop_loss=0.1, take_profit=0.2):
+        # Проверяем, есть ли достаточно данных для бэктестинга
+        if len(historical_data) < 2:
+            return {"status": "error", "message": "Недостаточно данных"}
+
+        # Создаем копию исторических данных
+        data = historical_data.copy()
+
+        # Применяем стратегию к данным
+        strategy_results = strategy(data)
+
+        # Создаем столбцы для хранения информации о покупках и продажах
+        data['Buy'] = 0
+        data['Sell'] = 0
+        data['Position'] = None
+
+        # Инициализируем переменные для хранения информации о позиции и балансе
+        position = None
+        balance = initial_balance
+        entry_price = None
+
+        # Проходим по данным и выполняем торговлю на основе сигналов стратегии
+        for i in range(1, len(data)):
+            if strategy_results['Buy'][i] == 1 and position is None:
+                data['Position'][i] = 'Buy'
+                position = 'Buy'
+                entry_price = data['Close'][i]
+                balance -= entry_price * trade_size * (1 + commission)
+            elif strategy_results['Sell'][i] == 1 and position == 'Buy':
+                data['Position'][i] = 'Sell'
+                position = None
+                balance += data['Close'][i] * trade_size * (1 - commission)
+            elif position == 'Buy':
+                if data['Close'][i] <= entry_price * (1 - stop_loss):
+                    data['Position'][i] = 'Sell'
+                    position = None
+                    balance += data['Close'][i] * trade_size * (1 - commission)
+                elif data['Close'][i] >= entry_price * (1 + take_profit):
+                    data['Position'][i] = 'Sell'
+                    position = None
+                    balance += data['Close'][i] * trade_size * (1 - commission)
+
+        # Рассчитываем итоговую прибыль
+        profit = balance - initial_balance
+
+        # Возвращаем результаты бэктестинга
+        return {
+            "status": "success",
+            "profit": profit,
+            "trades": data[['Close', 'Buy', 'Sell', 'Position']]
+        }
+
+    def risk_management(self, recommendation, account_balance, risk_tolerance=0.02):
+        position_size = account_balance * risk_tolerance
+        adjusted_position_size = position_size * recommendation
+        return min(adjusted_position_size, account_balance)
+
+    def analysis_frequency(self, data, threshold_low=0.01, threshold_high=0.05):
+        volatility = data['Close'].std()
+        if volatility < threshold_low:
+            return 'daily'
+        elif volatility < threshold_high:
+            return 'hourly'
+        else:
+            return 'minute'
+
+    # Пользовательский интерфейс
+    def generate_visual_report(self, data, indicators=['SMA', 'EMA']):
+        plt.figure(figsize=(12, 6))
+        plt.plot(data['Close'], label='Close Price')
+        for indicator in indicators:
+            if indicator in data.columns:
+                plt.plot(data[indicator], label=indicator)
+        plt.legend()
+        plt.title('Market Analysis Report')
+        plt.xlabel('Date')
+        plt.ylabel('Price')
+        plt.show()
+
+    # Интеграция с новостными источниками
+    def integrate_news_sources(self):
+        # TODO: Реализуйте интеграцию с новостными источниками для лучшего понимания рыночных условий
+        pass
+
+    # Уведомления
+    def send_notifications(self, event):
+        # TODO: Реализуйте метод для отправки уведомлений пользователю
+        pass
+
+
+# Создаем экземпляр класса MarketAnalysis
+market_analyzer = MarketAnalysis(bot, exchange)
 
 @dp.callback_query_handler(lambda c: c.data == 'menu_balance')
 async def get_balance(callback_query: types.CallbackQuery):
@@ -245,19 +703,6 @@ async def get_price_for_input(message: types.Message, state: FSMContext):
         await message.answer(f"Ошибка при получении цены для {coin}. Пожалуйста, попробуйте позже.")
     await state.finish()
 
-
-
-# @dp.callback_query_handler(lambda c: c.data.startswith('price_'))
-# async def show_coin_price(callback_query: types.CallbackQuery):
-#     coin = callback_query.data.split('_')[1]
-#     try:
-#         ticker = await exchange.fetch_ticker(f'{coin}/USDT')
-#         await callback_query.message.answer(f"Текущая цена {coin} равна {ticker['last']} USDT")
-#         await show_menu_after_request(callback_query.message)
-#     except Exception as e:
-#         logging.error(f"Ошибка при получении цены: {e}")
-#         await callback_query.message.answer(f"Ошибка при получении цены для {coin}. Пожалуйста, попробуйте позже.")
-#     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith('price_'))
 async def show_coin_price(callback_query: types.CallbackQuery):
@@ -393,10 +838,6 @@ async def handle_chart_request(callback_query: types.CallbackQuery):
     # После отправки графика, отправляем пользователю основное меню
     await callback_query.message.answer("Выберите действие из меню:", reply_markup=menu)
     await callback_query.answer()
-
-
-
-
 
 
 @dp.callback_query_handler(lambda c: c.data == 'menu_tradehistory')

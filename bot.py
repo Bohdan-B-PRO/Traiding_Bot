@@ -71,6 +71,9 @@ class SimpleDictStorage(BaseStorage):
         return f"{chat}:{user}"
 
 
+
+
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
@@ -161,22 +164,43 @@ async def clear_chat(callback_query: types.CallbackQuery):
     await show_menu_after_request(callback_query.message)
     await callback_query.answer()
 
+class MarketAnalysisState(StatesGroup):
+    CoinInput = State()  # Expecting a coin name as input
 
 class MarketAnalysis:
-
     def __init__(self, bot, exchange):
         self.bot = bot
         self.exchange = exchange
-        dp.callback_query_handler(lambda c: c.data.startswith('market_analysis'), state="*")(self.handle_market_analysis)
 
     async def handle_market_analysis(self, callback_query: types.CallbackQuery):
-        await self.market_analysis(callback_query)
-
-    async def market_analysis(self, callback_query: types.CallbackQuery):
         analysis_result = await self.perform_market_analysis()
         await self.bot.send_message(callback_query.from_user.id, analysis_result)
-        await self.bot.send_message(callback_query.from_user.id, "Выберите следующую команду из меню:",
-                                    reply_markup=menu)
+
+        # Offering the user to analyze a specific coin or return to the main menu
+        markup = InlineKeyboardMarkup(row_width=2)
+        item1 = InlineKeyboardButton("Анализировать конкретную монету", callback_data="analyze_specific_coin")
+        item2 = InlineKeyboardButton("Вернуться в главное меню", callback_data="return_to_menu")
+        markup.add(item1, item2)
+
+        await self.bot.send_message(callback_query.from_user.id, "Выберите действие:", reply_markup=markup)
+
+    async def ask_for_coin(self, callback_query: types.CallbackQuery, state: FSMContext):
+        await callback_query.message.answer("Введите название монеты для анализа:")
+        await MarketAnalysisState.CoinInput.set()
+
+    async def analyze_specific_coin(self, message: types.Message, state: FSMContext):
+        coin_name = message.text.upper()  # Assuming coin names are in uppercase
+        # Using the existing logic to analyze the coin
+        best_timeframe = "1d"  # This can be changed based on your preference
+        score, recommendation = await self.analyze_coin(coin_name, best_timeframe)
+
+        await self.bot.send_message(message.from_user.id, f"Рекомендация для {coin_name}: {recommendation}")
+        await state.finish()  # Resetting the state
+        await self.bot.send_message(message.from_user.id, "Выберите следующую команду из меню:", reply_markup=menu)
+
+    async def return_to_main_menu(self, callback_query: types.CallbackQuery):
+        await self.bot.send_message(callback_query.from_user.id, "Выберите следующую команду из меню:", reply_markup=menu)
+
 
     async def perform_market_analysis(self):
         coins = ["BTC", "ETH", "BNB", "ADA", "DOGE", "XRP", "DOT", "UNI", "BCH", "LTC", "LINK", "MATIC", "XLM", "ETC",
@@ -612,8 +636,25 @@ class MarketAnalysis:
         pass
 
 
-# Создаем экземпляр класса MarketAnalysis
+# Создайте экземпляр класса
 market_analyzer = MarketAnalysis(bot, exchange)
+
+# Определите обработчики
+@dp.callback_query_handler(lambda c: c.data == "market_analysis", state="*")
+async def market_analysis_callback_handler(callback_query: types.CallbackQuery, state: FSMContext):
+    await market_analyzer.handle_market_analysis(callback_query)
+
+@dp.callback_query_handler(lambda c: c.data == "analyze_specific_coin", state="*")
+async def analyze_specific_coin_handler(callback_query: types.CallbackQuery, state: FSMContext):
+    await market_analyzer.ask_for_coin(callback_query, state)
+
+@dp.message_handler(state=MarketAnalysisState.CoinInput)
+async def coin_input_handler(message: types.Message, state: FSMContext):
+    await market_analyzer.analyze_specific_coin(message, state)
+
+@dp.callback_query_handler(lambda c: c.data == "return_to_menu", state="*")
+async def return_to_menu_handler(callback_query: types.CallbackQuery, state: FSMContext):
+    await market_analyzer.return_to_main_menu(callback_query)
 
 @dp.callback_query_handler(lambda c: c.data == 'menu_balance')
 async def get_balance(callback_query: types.CallbackQuery):
@@ -838,6 +879,10 @@ async def handle_chart_request(callback_query: types.CallbackQuery):
     # После отправки графика, отправляем пользователю основное меню
     await callback_query.message.answer("Выберите действие из меню:", reply_markup=menu)
     await callback_query.answer()
+
+
+
+
 
 
 @dp.callback_query_handler(lambda c: c.data == 'menu_tradehistory')
